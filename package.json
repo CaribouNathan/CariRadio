@@ -1,0 +1,69 @@
+{
+  "name": "cariradio",
+  "productName": "CariRadio",
+  "version": "1.1.4",
+  "description": "Lecteur de radios (Radio Choco + annuaire Radio Browser) pilotable depuis le Stream Deck (CariCover)",
+  "author": "Caribou Labs",
+  "license": "MIT",
+  "homepage": "https://github.com/CaribouNathan/CariRadio",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CaribouNathan/CariRadio.git"
+  },
+  "private": true,
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "build:renderer": "vite build",
+    "build:main": "node scripts/build-main.mjs",
+    "build": "npm run build:renderer && npm run build:main",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --mac dir --arm64"
+  },
+  "build": {
+    "appId": "fr.cariboulabs.cariradio",
+    "productName": "CariRadio",
+    "copyright": "Caribou Labs",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "target": "dir",
+      "extendInfo": {
+        "LSApplicationCategoryType": "public.app-category.music",
+        "NSHumanReadableCopyright": "Caribou Labs",
+        "NSMicrophoneUsageDescription": "CariRadio n'utilise pas le micro. Vous pouvez refuser sans effet sur l'écoute."
+      }
+    },
+    "electronLanguages": [
+      "fr",
+      "en"
+    ],
+    "publish": null
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "hls.js": "^1.7.3"
+  }
+}
