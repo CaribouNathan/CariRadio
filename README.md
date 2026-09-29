@@ -18,7 +18,7 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
 ## Installation
 
 1. Télécharger la dernière version dans [Releases](https://github.com/CaribouNathan/CariRadio/releases) :
-   `…-mac-arm64.dmg` pour un Mac Apple Silicon (M1 et suivants), `…-mac-x64.dmg` pour un Mac Intel.
+   `…-mac-arm64.dmg` pour un Mac Apple Silicon (M1 et suivants).
 2. Ouvrir le `.dmg` et glisser **CariRadio** dans **Applications**.
 3. Premier lancement : l'app n'est pas notarisée par Apple, macOS peut donc la bloquer.
    - **Réglages Système › Confidentialité et sécurité**, en bas : **Ouvrir quand même**, puis confirmer ;
