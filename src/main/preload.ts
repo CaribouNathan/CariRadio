@@ -14,4 +14,6 @@ contextBridge.exposeInMainWorld("cari", {
 	moveFavorite: (id: string, delta: number) => ipcRenderer.send("move-favorite", id, delta),
 	stepStation: (delta: number) => ipcRenderer.send("step-station", delta),
 	setScope: (scope: string) => ipcRenderer.send("set-scope", scope),
+	toggleRecording: () => ipcRenderer.send("record-toggle"),
+	revealRecording: () => ipcRenderer.send("reveal-recording"),
 });

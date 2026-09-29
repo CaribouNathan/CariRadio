@@ -42,6 +42,19 @@ export interface AppState {
 	error: string;
 	track: Track | null;
 	history: Track[];
+	recording: RecordingState;
+}
+
+export interface RecordingState {
+	/** false pour les flux HLS */
+	available: boolean;
+	active: boolean;
+	startedAt: number;
+	bytes: number;
+	file: string;
+	error: string;
+	dir: string;
+	last: { file: string; path: string; at: number } | null;
 }
 
 export type StationQuery =
@@ -80,6 +93,8 @@ export interface CariBridge {
 	moveFavorite(id: string, delta: number): void;
 	stepStation(delta: number): void;
 	setScope(scope: Scope): void;
+	toggleRecording(): void;
+	revealRecording(): void;
 }
 
 declare global {

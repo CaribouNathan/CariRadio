@@ -208,6 +208,20 @@ export function StationsPanel({ s, playing, onClose, onToggle }: { s: AppState; 
 	useEffect(() => {
 		input.current?.focus();
 	}, []);
+
+	// Échap : efface la recherche, sinon ferme le panneau — où que soit le focus (ex. après un clic sur une station)
+	const textRef = useRef(text);
+	textRef.current = text;
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			e.preventDefault();
+			if (textRef.current) setText("");
+			else onClose();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [onClose]);
 	useEffect(() => {
 		const t = window.setTimeout(() => setSearch(text.trim()), 300);
 		return () => window.clearTimeout(t);
@@ -345,18 +359,7 @@ export function StationsPanel({ s, playing, onClose, onToggle }: { s: AppState; 
 	];
 
 	return (
-		<div
-			className="panel"
-			role="dialog"
-			aria-label="Stations"
-			onKeyDown={(e) => {
-				if (e.key === "Escape") {
-					e.stopPropagation();
-					if (text) setText("");
-					else onClose();
-				}
-			}}
-		>
+		<div className="panel" role="dialog" aria-label="Stations">
 			<header className="panel-head">
 				<span className="panel-title">Stations</span>
 				<button className="icon-btn close" onClick={onClose} aria-label="Fermer">

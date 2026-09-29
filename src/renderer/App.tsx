@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ExternalIcon, ListIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, SpeakerHigh, SpeakerLow, StarIcon } from "./icons";
+import { ChevronDown, ExternalIcon, ListIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, RecIcon, SpeakerHigh, SpeakerLow, StarIcon } from "./icons";
 import { Player } from "./player";
 import { StationArt, StationLogo, StationsPanel } from "./Stations";
 import type { AppState, Command, Track } from "./types";
@@ -8,6 +8,10 @@ const fmt = (ms: number) => {
 	const s = Math.max(0, Math.floor(ms / 1000));
 	return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
+/** Fiche Apple Music du morceau ; à défaut de lien direct, recherche Apple Music artiste + titre. */
+const appleMusicUrl = (t: Track | null | undefined) =>
+	!t?.title ? "" : t.buyLink || `https://music.apple.com/fr/search?term=${encodeURIComponent([t.artist, t.title].filter(Boolean).join(" "))}`;
+const fmtBytes = (b: number) => (b < 1e6 ? `${Math.round(b / 1e3)} ko` : `${(b / 1e6).toFixed(1).replace(".", ",")} Mo`);
 const hhmm = (t: number) => (t ? new Date(t).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "");
 
 const EMPTY_STATION = { id: "", name: "CariRadio", subtitle: "", stream: "", hls: false, favicon: "", homepage: "", tags: [], country: "", countrycode: "", state: "", codec: "", bitrate: 0 };
@@ -21,6 +25,7 @@ const EMPTY: AppState = {
 	error: "",
 	track: null,
 	history: [],
+	recording: { available: true, active: false, startedAt: 0, bytes: 0, file: "", error: "", dir: "", last: null },
 };
 
 export function App() {
@@ -28,6 +33,7 @@ export function App() {
 	const [, force] = useState(0);
 	const [now, setNow] = useState(Date.now());
 	const [panel, setPanel] = useState(false);
+	const [brokenCover, setBrokenCover] = useState(""); // pochette qui ne charge pas → logo de la station
 	const playerRef = useRef<Player | null>(null);
 
 	// Lecteur + pont avec le processus principal
@@ -78,7 +84,7 @@ export function App() {
 	const tr = s.track;
 	const st = s.station;
 	const art = tr?.cover || ""; // pochette, ou logo de la station quand le morceau n'en a pas
-	const realCover = !!tr?.cover && !tr.coverIsStation;
+	const realCover = !!tr?.cover && !tr.coverIsStation && brokenCover !== tr.cover;
 
 	// Centre de contrôle macOS / touches média
 	useEffect(() => {
@@ -108,6 +114,9 @@ export function App() {
 		return { frac: el / total, el, rest: total - el };
 	}, [tr?.startedAt, tr?.endAt, now]);
 
+	const rec = s.recording ?? EMPTY.recording;
+	const recentRec = !!rec.last && now - rec.last.at < 10_000;
+	const trackUrl = appleMusicUrl(tr);
 	const tech = [st.codec, st.bitrate ? `${st.bitrate} kb/s` : ""].filter(Boolean).join(" · ");
 	const canStep = s.favorites.length > 1 || (s.favorites.length === 1 && s.favorites[0].id !== st.id);
 
@@ -131,22 +140,52 @@ export function App() {
 					</span>
 					<ChevronDown />
 				</button>
+				<button className="icon-btn titlebar-list" onClick={() => setPanel(true)} title="Stations (⌘K)" aria-label="Stations">
+					<ListIcon size={16} />
+				</button>
 			</header>
 
 			<main className="now">
-				<div className={`cover ${playing ? "" : "dimmed"}`}>
-					{realCover ? <img src={art} alt="" draggable={false} /> : <StationArt station={st} />}
+				<div
+					className={`cover ${playing ? "" : "dimmed"} ${trackUrl ? "clickable" : ""}`}
+					onClick={() => trackUrl && window.cari.openExternal(trackUrl)}
+					title={trackUrl ? (tr?.buyLink ? "Ouvrir dans Apple Music" : "Rechercher dans Apple Music") : undefined}
+				>
+					{realCover ? <img src={art} alt="" draggable={false} onError={() => setBrokenCover(art)} /> : <StationArt station={st} />}
 				</div>
 
-				<div className={`badge ${badge.cls}`}>
-					<span className="dot" />
-					{badge.text}
+				<div className="badges">
+					<div className={`badge ${badge.cls}`}>
+						<span className="dot" />
+						{badge.text}
+					</div>
+					{rec.active ? (
+						<button className="badge rec" onClick={() => window.cari.toggleRecording()} title={`Enregistrement en cours : ${rec.file}\nCliquer pour arrêter (⌘R)`}>
+							<span className="dot" />
+							REC {fmt(now - rec.startedAt)} · {fmtBytes(rec.bytes)}
+						</button>
+					) : recentRec ? (
+						<button className="badge saved" onClick={() => window.cari.revealRecording()} title={`${rec.last!.file}\nAfficher dans le Finder`}>
+							Enregistré ✓
+						</button>
+					) : null}
 				</div>
 
-				<h1 className="title" title={tr?.title}>
-					{tr?.title || st.name}
-				</h1>
-				<div className="artist">{tr ? tr.artist || st.name : st.subtitle || " "}</div>
+				{trackUrl ? (
+					<button className="now-link" onClick={() => window.cari.openExternal(trackUrl)} title={tr?.buyLink ? "Ouvrir dans Apple Music" : "Rechercher dans Apple Music"}>
+						<h1 className="title">{tr!.title}</h1>
+						<div className="artist">
+							{tr!.artist || st.name} <ExternalIcon />
+						</div>
+					</button>
+				) : (
+					<>
+						<h1 className="title" title={tr?.title}>
+							{tr?.title || st.name}
+						</h1>
+						<div className="artist">{tr ? tr.artist || st.name : st.subtitle || "\u00a0"}</div>
+					</>
+				)}
 				{tr?.album ? <div className="album">{tr.album}</div> : <div className="album">{" "}</div>}
 
 				{progress ? (
@@ -182,8 +221,14 @@ export function App() {
 					<button className="icon-btn" onClick={() => window.cari.stepStation(1)} disabled={!canStep} title="Favori suivant (⌘])">
 						<NextIcon />
 					</button>
-					<button className="icon-btn" onClick={() => setPanel(true)} title="Stations (⌘K)">
-						<ListIcon />
+					<button
+						className={`icon-btn rec-btn ${rec.active ? "on" : ""}`}
+						onClick={() => window.cari.toggleRecording()}
+						disabled={!rec.active && !rec.available}
+						title={!rec.available ? "Enregistrement indisponible pour les flux HLS" : rec.active ? "Arrêter l'enregistrement (⌘R)" : "Enregistrer le flux (⌘R)"}
+						aria-label={rec.active ? "Arrêter l'enregistrement" : "Enregistrer"}
+					>
+						<RecIcon active={rec.active} />
 					</button>
 				</div>
 
@@ -200,14 +245,14 @@ export function App() {
 					/>
 					<SpeakerHigh />
 				</div>
-				{(p?.error || s.error) && <div className="error">{p?.error || s.error}</div>}
+				{(p?.error || s.error || rec.error) && <div className="error">{p?.error || s.error || rec.error}</div>}
 			</main>
 
 			<section className="history">
 				<h2>Précédemment</h2>
 				<ul>
 					{s.history.map((h: Track) => (
-						<li key={`${h.startedAt}-${h.title}`} onClick={() => h.buyLink && window.cari.openExternal(h.buyLink)} className={h.buyLink ? "link" : ""}>
+						<li key={`${h.startedAt}-${h.title}`} onClick={() => appleMusicUrl(h) && window.cari.openExternal(appleMusicUrl(h))} className={appleMusicUrl(h) ? "link" : ""}>
 							{h.cover ? <img src={h.cover} alt="" draggable={false} /> : <StationLogo station={st} size={34} radius={4} />}
 							<div className="meta">
 								<div className="t">{h.title}</div>
@@ -215,7 +260,7 @@ export function App() {
 							</div>
 							<div className="when">
 								{hhmm(h.startedAt)}
-								{h.buyLink && <ExternalIcon />}
+								{appleMusicUrl(h) && <ExternalIcon />}
 							</div>
 						</li>
 					))}

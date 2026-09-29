@@ -1,9 +1,10 @@
 // CariRadio — processus principal Electron.
-import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions, nativeTheme, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, type MenuItemConstructorOptions, nativeTheme, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { countries, frenchRegions, queryStations, reportClick, type Scope, stationById, type StationQuery } from "./catalog.js";
 import { MetadataPoller } from "./radio.js";
+import { Recording } from "./recorder.js";
 import { startControlServer, type Command } from "./server.js";
 import { brief, CHOCO, CONTROL_PORT, isStation, NATIVE, type Station } from "./station.js";
 
@@ -57,6 +58,8 @@ interface Config {
 	station: Station;
 	favorites: Station[];
 	scope: Scope;
+	/** dossier des enregistrements ("" = ~/Music/CariRadio) */
+	recordDir: string;
 }
 const configPath = () => path.join(app.getPath("userData"), "config.json");
 function loadConfig(): Config {
@@ -74,6 +77,7 @@ function loadConfig(): Config {
 		station: isStation(c.station) ? fresh(c.station) : CHOCO,
 		favorites,
 		scope: c.scope === "ALL" ? "ALL" : "FR",
+		recordDir: typeof c.recordDir === "string" ? c.recordDir : "",
 	};
 }
 let saveTimer: NodeJS.Timeout | null = null;
@@ -89,10 +93,72 @@ function saveConfig(): void {
 	}, 800);
 }
 
-let cfg: Config = { volume: 70, station: CHOCO, favorites: [CHOCO], scope: "FR" };
+let cfg: Config = { volume: 70, station: CHOCO, favorites: [CHOCO], scope: "FR", recordDir: "" };
 const audio: { status: AudioStatus; error: string } = { status: "idle", error: "" };
 
-const poller = new MetadataPoller(() => pushState());
+const poller = new MetadataPoller(() => {
+	recording?.noteSong(poller.current);
+	pushState();
+});
+
+// ---------- enregistrement ----------
+const recordDir = () => cfg.recordDir || path.join(app.getPath("music"), "CariRadio");
+let recording: Recording | null = null;
+let lastRecording: { file: string; path: string; at: number } | null = null;
+let recordTicker: NodeJS.Timeout | null = null;
+let recordError = "";
+
+function startRecording(): void {
+	if (recording) return;
+	const st = cfg.station;
+	if (st.hls) {
+		recordError = "Enregistrement impossible : cette station diffuse en HLS";
+		pushState();
+		return;
+	}
+	recordError = "";
+	const cur = poller.current;
+	const rec = new Recording(st.stream, { name: st.name, codec: st.codec }, recordDir(), cur ? { artist: cur.artist, title: cur.title } : null, () => pushState());
+	recording = rec;
+	recordTicker = setInterval(() => pushState(), 1000); // durée et taille à jour
+	rec.start().catch((e) => {
+		recordError = e instanceof Error ? e.message : String(e);
+		log("[rec] démarrage :", e);
+		void stopRecording();
+	});
+	buildMenus();
+	pushState();
+}
+
+async function stopRecording(): Promise<void> {
+	const rec = recording;
+	if (!rec) return;
+	recording = null;
+	if (recordTicker) clearInterval(recordTicker);
+	recordTicker = null;
+	const file = await rec.stop();
+	if (file) lastRecording = { file: path.basename(file), path: file, at: Date.now() };
+	else if (!recordError) recordError = rec.error ? `Enregistrement vide : ${rec.error}` : "Enregistrement vide";
+	if (rec.error) log("[rec]", rec.error);
+	buildMenus();
+	pushState();
+}
+
+function revealRecordings(): void {
+	if (lastRecording && fs.existsSync(lastRecording.path)) return shell.showItemInFolder(lastRecording.path);
+	fs.mkdirSync(recordDir(), { recursive: true });
+	void shell.openPath(recordDir());
+}
+
+async function chooseRecordDir(): Promise<void> {
+	const r = await dialog.showOpenDialog({ title: "Dossier des enregistrements", defaultPath: recordDir(), properties: ["openDirectory", "createDirectory"] });
+	if (r.canceled || !r.filePaths[0]) return;
+	cfg.recordDir = r.filePaths[0];
+	saveConfig();
+	pushState();
+}
+
+const toggleRecording = () => (recording ? void stopRecording() : startRecording());
 
 const isFavorite = (id: string) => cfg.favorites.some((f) => f.id === id);
 
@@ -128,6 +194,13 @@ function state() {
 		/** image à afficher : pochette du morceau, sinon logo de la station */
 		artwork: cur?.cover || st.favicon,
 		history: poller.history,
+		recording: {
+			available: !st.hls,
+			...(recording ? recording.info() : { active: false, startedAt: 0, bytes: 0, file: "", error: "" }),
+			error: recording?.info().error || recordError,
+			dir: recordDir(),
+			last: lastRecording,
+		},
 		serverTime: Date.now(),
 	};
 }
@@ -149,6 +222,7 @@ function toRenderer(c: RendererCommand): void {
 // ---------- stations ----------
 function selectStation(st: Station, play = true): void {
 	const changed = st.id !== cfg.station.id || st.stream !== cfg.station.stream;
+	if (changed && recording) void stopRecording(); // un fichier = une station
 	cfg.station = st;
 	// un favori garde la version la plus récente de sa fiche
 	cfg.favorites = cfg.favorites.map((f) => (f.id === st.id ? st : f));
@@ -207,6 +281,10 @@ function command(c: Command): void {
 			return void selectStationById(c.id);
 		case "stationStep":
 			return stepStation(c.delta);
+		case "record":
+			if (c.action === "start") return startRecording();
+			if (c.action === "stop") return void stopRecording();
+			return toggleRecording();
 		case "play":
 		case "toggle":
 			poller.refresh();
@@ -291,6 +369,15 @@ function buildMenus(): void {
 					{ type: "separator" },
 					{ label: "Monter le volume", accelerator: "CmdOrCtrl+Up", click: () => command({ type: "volumeStep", delta: 5 }) },
 					{ label: "Baisser le volume", accelerator: "CmdOrCtrl+Down", click: () => command({ type: "volumeStep", delta: -5 }) },
+					{ type: "separator" },
+					{
+						label: recording ? "Arrêter l'enregistrement" : "Enregistrer le flux",
+						accelerator: "CmdOrCtrl+R",
+						enabled: !!recording || !cfg.station.hls,
+						click: toggleRecording,
+					},
+					{ label: "Afficher les enregistrements", click: () => revealRecordings() },
+					{ label: "Dossier des enregistrements…", click: () => void chooseRecordDir() },
 				],
 			},
 			{
@@ -356,6 +443,8 @@ ipcMain.on("audio-state", (_e, a: { status: AudioStatus; volume: number; error?:
 ipcMain.on("open-external", (_e, url: string) => {
 	if (typeof url === "string" && /^https:\/\//.test(url)) void shell.openExternal(url);
 });
+ipcMain.on("record-toggle", () => toggleRecording());
+ipcMain.on("reveal-recording", () => revealRecordings());
 ipcMain.handle("catalog-query", (_e, q: StationQuery) => queryStations(q));
 ipcMain.handle("catalog-areas", (_e, scope: Scope) => (scope === "ALL" ? countries() : frenchRegions()));
 ipcMain.on("select-station", (_e, st: unknown) => {
@@ -378,8 +467,13 @@ app.on("second-instance", (_e, argv) => {
 	showWindow();
 });
 app.on("activate", () => showWindow());
-app.on("before-quit", () => {
+app.on("before-quit", (e) => {
 	quitting = true;
+	// on termine proprement l'enregistrement (fermeture + renommage du fichier) avant de quitter
+	if (recording) {
+		e.preventDefault();
+		void stopRecording().finally(() => app.quit());
+	}
 });
 
 app.whenReady().then(() => {

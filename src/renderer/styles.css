@@ -267,3 +267,30 @@ button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, 
 .art-fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .art.small .art-fg { inset: 27%; width: 46%; height: 46%; border-radius: 18%; background: #fff; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); object-fit: contain; }
 .art-fallback { display: grid; place-items: center; color: #fff; font-size: 84px; font-weight: 700; letter-spacing: 0.02em; }
+
+/* ---------- enregistrement ---------- */
+.badges { margin-top: 16px; display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.badges .badge { margin-top: 0; }
+button.badge { border: none; font-family: inherit; }
+.badge.rec { color: #fff; background: var(--red); font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0.02em; }
+.badge.rec .dot { background: #fff; animation: pulse 1.2s ease-in-out infinite; }
+.badge.saved { color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent); }
+.badge.saved:hover, .badge.rec:hover { filter: brightness(1.08); }
+.rec-btn { color: var(--red); }
+.icon-btn.rec-btn:hover:not(:disabled) { color: var(--red); }
+.rec-btn.on { animation: rec-glow 1.6s ease-in-out infinite; }
+@keyframes rec-glow { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--red) 22%, transparent); } }
+
+.titlebar-list { position: absolute; right: 8px; top: 5px; width: 28px; height: 28px; -webkit-app-region: no-drag; }
+
+/* morceau en cours cliquable → Apple Music */
+.now-link {
+	border: none; background: transparent; color: inherit; font: inherit; padding: 2px 8px; margin-top: 6px; border-radius: 8px;
+	display: flex; flex-direction: column; align-items: center; max-width: 100%; cursor: pointer;
+}
+.now-link .title { margin-top: 0; }
+.now-link .artist { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; }
+.now-link .artist svg { opacity: 0; transition: opacity 0.15s ease; flex: none; }
+.now-link:hover { background: var(--hover); }
+.now-link:hover .artist svg { opacity: 0.8; }
+.cover.clickable { cursor: pointer; }

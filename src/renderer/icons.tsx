@@ -120,3 +120,11 @@ export const EqBars = ({ playing }: { playing: boolean }) => (
 		<i />
 	</span>
 );
+
+/** Enregistrement : rond rouge ; en cours : carré « stop ». */
+export const RecIcon = ({ size = 20, active = false }: P & { active?: boolean }) => (
+	<svg width={size} height={size} viewBox="0 0 20 20" aria-hidden="true">
+		<circle cx="10" cy="10" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+		{active ? <rect x="6.6" y="6.6" width="6.8" height="6.8" rx="1.4" fill="currentColor" /> : <circle cx="10" cy="10" r="4.6" fill="currentColor" />}
+	</svg>
+);

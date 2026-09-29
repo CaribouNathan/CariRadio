@@ -10,6 +10,9 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
   Sans pochette, le logo de la station prend sa place.
 - **Radio Choco — Sound HD** intégrée nativement (pochette, progression et historique via RadioKing).
 - **Flux HLS** (RTL, Radio France…) lus avec [hls.js](https://github.com/video-dev/hls.js).
+- **Enregistrement** (⌘R) : copie brute du flux (sans réencodage) dans `~/Music/CariRadio`, fichier nommé
+  « Artiste - Titre (Station, date heure) ». Indisponible pour les flux HLS.
+- **Apple Music** : un clic sur le morceau en cours ou sur un titre de l'historique ouvre sa fiche.
 - **Stream Deck** : API locale sur `127.0.0.1:32700`, utilisée par le plugin CariCover.
 - Centre de contrôle macOS et touches média (⏮ ⏭ = favori précédent / suivant). Clair/sombre automatique.
 - **Aucun accès au micro** : signée avec le runtime renforcé sans droit d'entrée audio, l'app ne peut pas y accéder
@@ -18,7 +21,7 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
 ## Installation
 
 1. Télécharger la dernière version dans [Releases](https://github.com/CaribouNathan/CariRadio/releases) :
-   `…-mac-arm64.dmg` pour un Mac Apple Silicon (M1 et suivants).
+   `…-mac-arm64.dmg` pour un Mac Apple Silicon (M1 et suivants), `…-mac-x64.dmg` pour un Mac Intel.
 2. Ouvrir le `.dmg` et glisser **CariRadio** dans **Applications**.
 3. Premier lancement : l'app n'est pas notarisée par Apple, macOS peut donc la bloquer.
    - **Réglages Système › Confidentialité et sécurité**, en bas : **Ouvrir quand même**, puis confirmer ;
@@ -33,6 +36,7 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
 | ⌘1 … ⌘9 | Favoris 1 à 9 (menu **Stations**) |
 | ⌘] / ⌘[ | Favori suivant / précédent |
 | ⌘D | Ajouter / retirer la station des favoris |
+| ⌘R | Enregistrer le flux / arrêter |
 | ⌘↑ / ⌘↓ | Volume |
 
 Fermer la fenêtre ne coupe pas la radio (⌘Q pour quitter).
@@ -42,11 +46,13 @@ Fermer la fenêtre ne coupe pas la radio (⌘Q pour quitter).
 `POST /play` `/pause` `/toggle` `/stop` `/show`
 `POST /volume?value=0-100` `/volume/up?step=5` `/volume/down?step=5`
 `POST /station?id=<id>` (favori ou identifiant Radio Browser) · `POST /station/next` · `POST /station/prev`
+`POST /record/toggle` `/record/start` `/record/stop`
 
 `/state` renvoie la station (`station.name`, `station.subtitle`, `station.favicon`, `station.codec`,
 `station.bitrate`, `station.favorite`…), le morceau (`track`), l'historique (`history`), les favoris, et `artwork`
 (pochette, ou logo de la station). Quand le morceau n'a pas de pochette, `track.cover` contient le logo et
-`track.coverIsStation` vaut `true`.
+`track.coverIsStation` vaut `true`. `recording` donne l'état de l'enregistrement (`active`, `startedAt`, `bytes`,
+`file`, `last`).
 
 Écoute locale uniquement : l'API n'est pas joignable depuis le réseau.
 
@@ -54,7 +60,8 @@ Fermer la fenêtre ne coupe pas la radio (⌘Q pour quitter).
 Node.js 20 ou plus, Xcode Command Line Tools.
 
 - Double-clic sur `build.command` → `release/mac-arm64/CariRadio.app` (signature ad hoc).
-- Ou `scripts/package-mac.sh arm64` (ou `x64`) → `.zip` et `.dmg` dans `release/`.
+- Double-clic sur `creer-dmg.command` → `release/CariRadio-<version>-mac-arm64.dmg` (+ `.zip`).
+  Pour Intel : `scripts/package-mac.sh x64` après un premier build.
 
 Electron + React + TypeScript + Vite. Réglages : `~/Library/Application Support/CariRadio/config.json`.
 Journal d'erreurs : `~/Library/Logs/CariRadio/cariradio.log` (menu Aide › Afficher le journal d'erreurs).

@@ -5,6 +5,7 @@
 //   POST /volume?value=0-100 | /volume/up?step=5 | /volume/down?step=5
 //   POST /station?id=<id>           → lance une station (favori, ou identifiant Radio Browser)
 //   POST /station/next | /station/prev → favori suivant / précédent
+//   POST /record/toggle | /record/start | /record/stop → enregistrement du flux
 //   POST /show                      → affiche la fenêtre
 // Les requêtes GET sont acceptées pour les commandes (pratique pour tester avec curl).
 import http from "node:http";
@@ -18,6 +19,7 @@ export type Command =
 	| { type: "volumeStep"; delta: number }
 	| { type: "station"; id: string }
 	| { type: "stationStep"; delta: number }
+	| { type: "record"; action: "start" | "stop" | "toggle" }
 	| { type: "show" };
 
 export function startControlServer(
@@ -74,6 +76,16 @@ export function startControlServer(
 				break;
 			case "/station/prev":
 				cmd = { type: "stationStep", delta: -1 };
+				break;
+			case "/record/start":
+				cmd = { type: "record", action: "start" };
+				break;
+			case "/record/stop":
+				cmd = { type: "record", action: "stop" };
+				break;
+			case "/record":
+			case "/record/toggle":
+				cmd = { type: "record", action: "toggle" };
 				break;
 			case "/show":
 				cmd = { type: "show" };
