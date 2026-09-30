@@ -1,5 +1,15 @@
 # Journal des versions
 
+## 1.5.1
+- Redimensionnement corrigé quand on colle la fenêtre sur un bord de l'écran (pavage macOS) :
+  - la taille « normale » n'est plus mémorisée quand elle est imposée par macOS, pendant une bascule de mode ou
+    en plein écran, ni si elle est sous le minimum ;
+  - toute taille appliquée par l'app est bornée (minimum 340 × 600, écran visible) — une taille aberrante
+    enregistrée par une version précédente est corrigée au lancement ;
+  - le mode compact ne modifie plus le comportement de la fenêtre vis-à-vis des espaces de travail
+    (source d'états incohérents), et sa largeur est limitée à 640 px ;
+  - fenêtre ramenée dans l'écran si un écran externe est débranché.
+
 ## 1.3.0
 - **Icône dans la barre des menus** : station et morceau en cours, lecture/pause, J'aime, enregistrement, favoris,
   volume, mode compact. « REC » s'affiche à côté de l'icône pendant un enregistrement. Désactivable dans le menu

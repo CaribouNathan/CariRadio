@@ -9,6 +9,7 @@ import {
 	nativeImage,
 	nativeTheme,
 	type Rectangle,
+	screen,
 	session,
 	shell,
 	Tray,
@@ -486,8 +487,13 @@ function command(c: Command): void {
 }
 
 // ---------- fenêtre + mode compact ----------
+// Règles (1.5.1) : les tailles appliquées par programme sont toujours bornées (minimum + écran visible), car
+// macOS n'applique la taille minimale qu'aux redimensionnements à la souris ; la taille « normale » n'est
+// mémorisée que si elle est plausible, jamais pendant une bascule de mode ni en plein écran.
 const NORMAL = { width: 380, height: 760, minWidth: 340, minHeight: 600 };
-const COMPACT = { width: 380, height: 136, minWidth: 320 };
+const COMPACT = { width: 380, height: 136, minWidth: 320, maxWidth: 640 };
+const UNBOUNDED = 100_000;
+let modeSwitchAt = 0; // pendant ~1 s après une bascule, les « resized » viennent de nous, pas de l'utilisateur
 
 function showWindow(): void {
 	if (!win) createWindow();
@@ -495,29 +501,69 @@ function showWindow(): void {
 	win!.focus();
 }
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+/** Ramène un rectangle dans l'écran qui le contient le plus et au-dessus des tailles minimales. */
+function fitBounds(b: Rectangle, minW: number, minH: number, maxW = UNBOUNDED, maxH = UNBOUNDED): Rectangle {
+	const area = screen.getDisplayMatching(b).workArea;
+	const width = Math.round(clamp(b.width, minW, Math.min(maxW, area.width)));
+	const height = Math.round(clamp(b.height, minH, Math.min(maxH, area.height)));
+	return {
+		width,
+		height,
+		x: Math.round(clamp(b.x, area.x, area.x + area.width - width)),
+		y: Math.round(clamp(b.y, area.y, area.y + area.height - height)),
+	};
+}
+
+/** Taille de la fenêtre normale : celle mémorisée si elle est valable, sinon la taille par défaut, à la position donnée. */
+function normalBounds(at: { x: number; y: number }): Rectangle {
+	const b = cfg.bounds;
+	const ok = b && b.width >= NORMAL.minWidth && b.height >= NORMAL.minHeight;
+	return fitBounds({ x: at.x, y: at.y, width: ok ? b!.width : NORMAL.width, height: ok ? b!.height : NORMAL.height }, NORMAL.minWidth, NORMAL.minHeight);
+}
+
 function applyWindowMode(animate: boolean): void {
 	if (!win) return;
+	modeSwitchAt = Date.now();
+	if (win.isFullScreen()) win.setFullScreen(false);
+	if (win.isMaximized()) win.unmaximize();
+	const cur = win.getBounds();
 	if (cfg.compact) {
+		// bornes d'abord (sinon macOS refuse la nouvelle taille), puis la taille elle-même
 		win.setMinimumSize(COMPACT.minWidth, COMPACT.height);
-		win.setMaximumSize(1200, COMPACT.height);
-		const b = win.getBounds();
-		win.setBounds({ x: b.x, y: b.y, width: Math.min(b.width, 520), height: COMPACT.height }, animate);
+		win.setMaximumSize(COMPACT.maxWidth, COMPACT.height);
+		const b = fitBounds({ x: cur.x, y: cur.y, width: Math.min(cur.width, 520), height: COMPACT.height }, COMPACT.minWidth, COMPACT.height, COMPACT.maxWidth, COMPACT.height);
+		win.setBounds(b, animate);
 		win.setAlwaysOnTop(cfg.onTop, "floating");
-		win.setVisibleOnAllWorkspaces(cfg.onTop, { visibleOnFullScreen: true });
 	} else {
-		win.setMaximumSize(0, 0); // 0 = sans limite
+		win.setMaximumSize(UNBOUNDED, UNBOUNDED);
 		win.setMinimumSize(NORMAL.minWidth, NORMAL.minHeight);
-		const b = cfg.bounds;
-		const cur = win.getBounds();
-		win.setBounds(b ? { ...b, x: cur.x, y: cur.y } : { x: cur.x, y: cur.y, width: NORMAL.width, height: NORMAL.height }, animate);
+		win.setBounds(normalBounds(cur), animate);
 		win.setAlwaysOnTop(false);
-		win.setVisibleOnAllWorkspaces(false);
 	}
+}
+
+/** Mémorise la taille de la fenêtre normale — seulement si elle est plausible et choisie par l'utilisateur. */
+let boundsTimer: NodeJS.Timeout | null = null;
+function rememberBounds(): void {
+	if (boundsTimer) clearTimeout(boundsTimer);
+	boundsTimer = setTimeout(() => {
+		if (!win || cfg.compact || Date.now() - modeSwitchAt < 1200) return;
+		if (win.isFullScreen() || win.isMaximized() || win.isMinimized()) return;
+		const b = win.getBounds();
+		if (b.width < NORMAL.minWidth || b.height < NORMAL.minHeight) return; // taille imposée de l'extérieur : on ne la garde pas
+		cfg.bounds = b;
+		saveConfig();
+	}, 500);
 }
 
 function setCompact(on: boolean): void {
 	if (on === cfg.compact) return;
-	if (on && win) cfg.bounds = win.getBounds(); // taille normale à restaurer
+	if (on && win && !win.isFullScreen()) {
+		const b = win.getBounds();
+		if (b.width >= NORMAL.minWidth && b.height >= NORMAL.minHeight) cfg.bounds = b; // taille normale à restaurer
+	}
 	cfg.compact = on;
 	saveConfig();
 	applyWindowMode(true);
@@ -529,16 +575,20 @@ function setCompact(on: boolean): void {
 function setOnTop(on: boolean): void {
 	cfg.onTop = on;
 	saveConfig();
-	applyWindowMode(false);
+	if (win && cfg.compact) win.setAlwaysOnTop(on, "floating");
 	buildMenus();
 	pushState();
 }
 
 function createWindow(): void {
-	const b = cfg.bounds;
+	// taille de départ déjà bornée (écran débranché, taille aberrante enregistrée par une version précédente…)
+	const primary = screen.getPrimaryDisplay().workArea;
+	const start = cfg.bounds ?? { x: primary.x + Math.round((primary.width - NORMAL.width) / 2), y: primary.y + 40, width: NORMAL.width, height: NORMAL.height };
+	const b = cfg.compact
+		? fitBounds({ ...start, width: COMPACT.width, height: COMPACT.height }, COMPACT.minWidth, COMPACT.height, COMPACT.maxWidth, COMPACT.height)
+		: normalBounds(start);
 	win = new BrowserWindow({
-		width: cfg.compact ? COMPACT.width : (b?.width ?? NORMAL.width),
-		height: cfg.compact ? COMPACT.height : (b?.height ?? NORMAL.height),
+		...b,
 		minWidth: cfg.compact ? COMPACT.minWidth : NORMAL.minWidth,
 		minHeight: cfg.compact ? COMPACT.height : NORMAL.minHeight,
 		title: "CariRadio",
@@ -558,12 +608,12 @@ function createWindow(): void {
 	win.loadFile(path.join(__dirname, "renderer", "index.html"));
 	win.once("ready-to-show", () => win?.show());
 	applyWindowMode(false);
-	// mémorise la taille de la fenêtre normale
-	win.on("resized", () => {
-		if (win && !cfg.compact) {
-			cfg.bounds = win.getBounds();
-			saveConfig();
-		}
+	// mémorise la taille de la fenêtre normale (filtrée, voir rememberBounds)
+	win.on("resized", rememberBounds);
+	win.on("moved", rememberBounds);
+	// macOS remplit l'écran quand on la colle en haut : en compact, on reste une barre
+	win.on("maximize", () => {
+		if (cfg.compact) applyWindowMode(false);
 	});
 	// erreurs du renderer (dont celles attrapées par le filet d'affichage) → journal
 	win.webContents.on("console-message", (...args: unknown[]) => {
@@ -840,6 +890,17 @@ app.on("before-quit", (e) => {
 });
 
 app.whenReady().then(() => {
+	// écran débranché ou résolution changée : la fenêtre revient dans la zone visible
+	const refit = () => {
+		if (!win) return;
+		const b = win.getBounds();
+		const f = cfg.compact
+			? fitBounds(b, COMPACT.minWidth, COMPACT.height, COMPACT.maxWidth, COMPACT.height)
+			: fitBounds(b, NORMAL.minWidth, NORMAL.minHeight);
+		if (f.x !== b.x || f.y !== b.y || f.width !== b.width || f.height !== b.height) win.setBounds(f);
+	};
+	screen.on("display-removed", refit);
+	screen.on("display-metrics-changed", refit);
 	session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false)); // l'app n'a besoin d'aucune permission
 	session.defaultSession.setPermissionCheckHandler((_wc, permission) => !CAPTURE_PERMISSIONS.has(permission));
 	session.defaultSession.setDevicePermissionHandler(() => false);
