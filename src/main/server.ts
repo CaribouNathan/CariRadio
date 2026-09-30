@@ -1,4 +1,4 @@
-// API de contrôle locale (127.0.0.1 uniquement) — utilisée par le plugin Stream Deck CariCover.
+// API de contrôle locale (127.0.0.1 uniquement) — utilisée par le plugin Stream Deck CariMusicDeck.
 //   GET  /state                     → état complet (JSON)
 //   GET  /stations                  → favoris (ordre du menu) + station en cours
 //   POST /play | /pause | /toggle | /stop
@@ -6,6 +6,8 @@
 //   POST /station?id=<id>           → lance une station (favori, ou identifiant Radio Browser)
 //   POST /station/next | /station/prev → favori suivant / précédent
 //   POST /record/toggle | /record/start | /record/stop → enregistrement du flux
+//   POST /like/toggle               → ajoute / retire le morceau en cours des morceaux aimés
+//   POST /compact                   → bascule le mode compact
 //   POST /show                      → affiche la fenêtre
 // Les requêtes GET sont acceptées pour les commandes (pratique pour tester avec curl).
 import http from "node:http";
@@ -20,6 +22,8 @@ export type Command =
 	| { type: "station"; id: string }
 	| { type: "stationStep"; delta: number }
 	| { type: "record"; action: "start" | "stop" | "toggle" }
+	| { type: "like" }
+	| { type: "compact" }
 	| { type: "show" };
 
 export function startControlServer(
@@ -86,6 +90,13 @@ export function startControlServer(
 			case "/record":
 			case "/record/toggle":
 				cmd = { type: "record", action: "toggle" };
+				break;
+			case "/like":
+			case "/like/toggle":
+				cmd = { type: "like" };
+				break;
+			case "/compact":
+				cmd = { type: "compact" };
 				break;
 			case "/show":
 				cmd = { type: "show" };

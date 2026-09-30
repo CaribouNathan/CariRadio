@@ -1,6 +1,6 @@
 // Panneau de choix des stations : favoris, populaires, genres, régions/pays, recherche.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronLeft, ChevronRight, CloseIcon, EqBars, PauseIcon, PlayIcon, SearchIcon, StarIcon } from "./icons";
+import { ChevronLeft, GripIcon, ChevronRight, CloseIcon, EqBars, PauseIcon, PlayIcon, SearchIcon, StarIcon } from "./icons";
 import type { AppState, Area, Scope, Station, StationQuery } from "./types";
 
 type Tab = "fav" | "top" | "genres" | "areas";
@@ -109,14 +109,16 @@ function StationRow(props: {
 	favorite: boolean;
 	onPlay: () => void;
 	onFav: () => void;
-	onMove?: (delta: number) => void;
-	first?: boolean;
-	last?: boolean;
+	/** poignée de réorganisation (favoris) */
+	handle?: React.ReactNode;
+	className?: string;
+	style?: React.CSSProperties;
 }) {
 	const { station: s } = props;
 	const secondary = [s.subtitle, techLine(s)].filter(Boolean).join(" — ");
 	return (
-		<li className={`row ${props.current ? "current" : ""}`} onClick={props.onPlay} title={s.name}>
+		<li className={`row ${props.current ? "current" : ""} ${props.className ?? ""}`} style={props.style} onClick={props.onPlay} title={s.name}>
+			{props.handle}
 			<StationLogo station={s} />
 			<div className="meta">
 				<div className="t">
@@ -125,16 +127,6 @@ function StationRow(props: {
 				</div>
 				<div className="a">{secondary}</div>
 			</div>
-			{props.onMove && (
-				<div className="reorder" onClick={(e) => e.stopPropagation()}>
-					<button disabled={props.first} onClick={() => props.onMove!(-1)} aria-label="Monter">
-						<ArrowUp />
-					</button>
-					<button disabled={props.last} onClick={() => props.onMove!(1)} aria-label="Descendre" className="down">
-						<ArrowUp />
-					</button>
-				</div>
-			)}
 			<button
 				className={`star ${props.favorite ? "on" : ""}`}
 				onClick={(e) => {
@@ -147,6 +139,134 @@ function StationRow(props: {
 				<StarIcon size={16} filled={props.favorite} />
 			</button>
 		</li>
+	);
+}
+
+type RowExtra = Partial<Parameters<typeof StationRow>[0]>;
+
+/**
+ * Favoris réorganisables : on attrape la poignée ⠿ et on glisse. Les autres lignes s'écartent pour montrer
+ * la place ; défilement automatique près des bords. Clavier : poignée sélectionnée + ↑ / ↓.
+ */
+function FavoritesList({ favorites, row }: { favorites: Station[]; row: (st: Station, extra?: RowExtra) => React.ReactNode }) {
+	// ordre affiché : celui du processus principal, sauf juste après un dépôt (évite un saut le temps de l'aller-retour IPC)
+	const [local, setLocal] = useState<string[] | null>(null);
+	const [drag, setDrag] = useState<{ from: number; to: number; dy: number } | null>(null);
+	const listRef = useRef<HTMLUListElement>(null);
+	const g = useRef<{ from: number; startY: number; lastY: number; mids: number[]; height: number; scroller: HTMLElement | null; scroll0: number; raf: number } | null>(null);
+
+	const serverIds = favorites.map((f) => f.id).join("|");
+	useEffect(() => {
+		setLocal(null);
+	}, [serverIds]);
+	const byId = new Map(favorites.map((f) => [f.id, f]));
+	const ordered = (local ?? favorites.map((f) => f.id)).map((id) => byId.get(id)).filter((f): f is Station => !!f);
+
+	const compute = () => {
+		const d = g.current;
+		if (!d) return;
+		const scrollDelta = (d.scroller?.scrollTop ?? 0) - d.scroll0;
+		const dy = d.lastY - d.startY + scrollDelta;
+		const center = d.mids[d.from] + dy;
+		let to = 0;
+		d.mids.forEach((m, k) => {
+			if (k !== d.from && m < center) to++;
+		});
+		setDrag({ from: d.from, to, dy });
+	};
+
+	const tick = () => {
+		const d = g.current;
+		if (!d) return;
+		// défilement automatique quand la ligne approche du haut ou du bas de la liste
+		const box = d.scroller?.getBoundingClientRect();
+		if (d.scroller && box) {
+			const edge = 36;
+			if (d.lastY < box.top + edge) d.scroller.scrollTop -= Math.ceil((box.top + edge - d.lastY) / 4);
+			else if (d.lastY > box.bottom - edge) d.scroller.scrollTop += Math.ceil((d.lastY - (box.bottom - edge)) / 4);
+		}
+		compute();
+		d.raf = requestAnimationFrame(tick);
+	};
+
+	const onDown = (e: React.PointerEvent, i: number) => {
+		if (e.button !== 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const items = Array.from(listRef.current?.children ?? []) as HTMLElement[];
+		const rects = items.map((el) => el.getBoundingClientRect());
+		const scroller = listRef.current?.closest(".panel-body") as HTMLElement | null;
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		g.current = { from: i, startY: e.clientY, lastY: e.clientY, mids: rects.map((r) => r.top + r.height / 2), height: rects[i]?.height ?? 46, scroller, scroll0: scroller?.scrollTop ?? 0, raf: 0 };
+		setDrag({ from: i, to: i, dy: 0 });
+		g.current.raf = requestAnimationFrame(tick);
+	};
+	const onMove = (e: React.PointerEvent) => {
+		if (g.current) g.current.lastY = e.clientY;
+	};
+	const onUp = () => {
+		const d = g.current;
+		if (!d) return;
+		cancelAnimationFrame(d.raf);
+		g.current = null;
+		const res = drag;
+		setDrag(null);
+		if (res && res.to !== res.from) {
+			const ids = ordered.map((f) => f.id);
+			const [moved] = ids.splice(res.from, 1);
+			ids.splice(res.to, 0, moved);
+			setLocal(ids);
+			window.cari.reorderFavorites(ids);
+		}
+	};
+	useEffect(
+		() => () => {
+			if (g.current) cancelAnimationFrame(g.current.raf);
+		},
+		[],
+	);
+
+	const shift = (k: number): number => {
+		if (!drag || k === drag.from) return 0;
+		const h = g.current?.height ?? 46;
+		if (drag.from < drag.to && k > drag.from && k <= drag.to) return -h;
+		if (drag.to < drag.from && k >= drag.to && k < drag.from) return h;
+		return 0;
+	};
+
+	return (
+		<ul className={`rows favorites ${drag ? "dragging" : ""}`} ref={listRef}>
+			{ordered.map((f, i) => {
+				const isDragged = drag?.from === i;
+				return row(f, {
+					className: isDragged ? "lifted" : "",
+					style: { transform: `translateY(${isDragged ? drag!.dy : shift(i)}px)` },
+					handle: (
+						<span
+							className="grip"
+							role="button"
+							tabIndex={0}
+							aria-label={`Déplacer ${f.name}`}
+							title="Glisser pour réorganiser"
+							onPointerDown={(e) => onDown(e, i)}
+							onPointerMove={onMove}
+							onPointerUp={onUp}
+							onPointerCancel={onUp}
+							onClick={(e) => e.stopPropagation()}
+							onKeyDown={(e) => {
+								if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+									e.preventDefault();
+									e.stopPropagation();
+									window.cari.moveFavorite(f.id, e.key === "ArrowUp" ? -1 : 1);
+								}
+							}}
+						>
+							<GripIcon />
+						</span>
+					),
+				});
+			})}
+		</ul>
 	);
 }
 
@@ -258,7 +378,7 @@ export function StationsPanel({ s, playing, onClose, onToggle }: { s: AppState; 
 	}, [query ? JSON.stringify(query) : tab]);
 
 	const favIds = new Set(s.favorites.map((f) => f.id));
-	const row = (st: Station, extra?: Partial<Parameters<typeof StationRow>[0]>) => (
+	const row = (st: Station, extra?: RowExtra) => (
 		<StationRow
 			key={st.id}
 			station={st}
@@ -296,11 +416,7 @@ export function StationsPanel({ s, playing, onClose, onToggle }: { s: AppState; 
 	if (search.length >= 2) body = results;
 	else if (tab === "fav")
 		body = s.favorites.length ? (
-			<ul className="rows">
-				{s.favorites.map((f, i) =>
-					row(f, { onMove: (d) => window.cari.moveFavorite(f.id, d), first: i === 0, last: i === s.favorites.length - 1 }),
-				)}
-			</ul>
+			<FavoritesList favorites={s.favorites} row={row} />
 		) : (
 			<div className="hint">Touchez l'étoile d'une station pour l'ajouter ici. Les favoris sont aussi dans le menu Stations (⌘1 à ⌘9) et se parcourent depuis le Stream Deck.</div>
 		);

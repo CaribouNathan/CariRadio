@@ -14,6 +14,10 @@ export class Player {
 	private wantPlay = false;
 	private retry: number | null = null;
 	private retries = 0;
+	/** coupures depuis le chargement du flux : la lecture s'interrompt (attente, erreur) après avoir démarré */
+	dropouts = 0;
+	/** infos du niveau HLS lu (débit, codec) */
+	hlsInfo: { bitrate: number; codec: string } | null = null;
 
 	constructor(private onChange: () => void) {
 		this.audio.preload = "none";
@@ -31,7 +35,20 @@ export class Player {
 		a.addEventListener("stalled", () => this.wantPlay && this.set("loading"));
 	}
 
+	/** échecs consécutifs (remis à zéro dès que le son repart) — sert au basculement de source */
+	get failures(): number {
+		return this.retries;
+	}
+
+	/** secondes d'audio déjà reçues en avance sur la lecture */
+	get bufferAhead(): number {
+		const b = this.audio.buffered;
+		if (!b.length) return 0;
+		return Math.max(0, b.end(b.length - 1) - this.audio.currentTime);
+	}
+
 	private set(s: AudioStatus, error = ""): void {
+		if (this.status === "playing" && this.wantPlay && (s === "loading" || s === "error")) this.dropouts++;
 		this.status = s;
 		this.error = error;
 		this.onChange();
@@ -63,6 +80,11 @@ export class Player {
 		if (this.isHls && Hls.isSupported()) {
 			const h = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 });
 			this.hls = h;
+			const info = (lv: { bitrate?: number; audioCodec?: string; codecs?: string } | undefined) => {
+				if (lv) this.hlsInfo = { bitrate: Math.round((lv.bitrate ?? 0) / 1000), codec: lv.audioCodec || lv.codecs || "" };
+			};
+			h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => info(d.levels[0]));
+			h.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => info(h.levels[d.level]));
 			h.on(Hls.Events.ERROR, (_e, d) => {
 				if (d.fatal && this.hls === h) this.fail("Flux indisponible");
 			});
@@ -80,6 +102,10 @@ export class Player {
 	/** Change de flux ; relance immédiatement si demandé (ou si la radio jouait déjà). */
 	load(stream: string, hls: boolean, play: boolean): void {
 		const same = stream === this.stream;
+		if (!same) {
+			this.dropouts = 0;
+			this.hlsInfo = null;
+		}
 		this.stream = stream;
 		this.isHls = hls || /\.m3u8(\?|$)/i.test(stream);
 		if (play) {

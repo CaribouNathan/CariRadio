@@ -1,5 +1,27 @@
 # Journal des versions
 
+## 1.3.0
+- **Icône dans la barre des menus** : station et morceau en cours, lecture/pause, J'aime, enregistrement, favoris,
+  volume, mode compact. « REC » s'affiche à côté de l'icône pendant un enregistrement. Désactivable dans le menu
+  CariRadio.
+- **Morceaux aimés** : cœur sur le morceau en cours (⌘L), onglet « J'aime » (lien Apple Music, retrait au survol),
+  conservés entre les lancements. L'étoile « station favorite » passe dans la barre de titre.
+- **Mode compact** (⇧⌘M) : fenêtre de 136 px de haut (pochette, titre, commandes), au premier plan par défaut
+  (menu Présentation).
+- **Historique par station, conservé** : 50 derniers titres par station, gardés quand on change de station et
+  après redémarrage ; dates « hier », « 12/09 ».
+- **Qualité du flux** : pastille à côté de « En direct » (format et débit réellement mesurés sur les trames audio)
+  et fiche détaillée : format, fréquence, canaux, débit mesuré / annoncé, tampon, coupures, serveur, HTTPS.
+- **Source de secours** : après 3 échecs d'affilée, CariRadio essaie automatiquement les autres fiches de la même
+  radio dans Radio Browser ; « Garder » adopte la nouvelle source pour de bon.
+- API locale : `POST /like/toggle`, `POST /compact` ; `/state` expose `track.liked`, `likes`, `quality`, `source`,
+  `compact`.
+
+## 1.2.1
+- Favoris réorganisables par glisser-déposer avec une poignée ⠿ (les flèches disparaissent) ; défilement
+  automatique près des bords ; au clavier, poignée sélectionnée + ↑ / ↓. Le menu Stations (⌘1…⌘9) suit l'ordre.
+- Fond du panneau Stations plus opaque.
+
 ## 1.2.0
 - Bouton d'enregistrement (⌘R) : copie brute du flux, sans réencodage, dans `~/Music/CariRadio`
   (dossier modifiable dans le menu Commandes). Fichier nommé d'après le morceau en cours :

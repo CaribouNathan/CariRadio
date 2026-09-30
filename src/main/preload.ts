@@ -12,8 +12,13 @@ contextBridge.exposeInMainWorld("cari", {
 	selectStation: (s: unknown) => ipcRenderer.send("select-station", s),
 	toggleFavorite: (s: unknown) => ipcRenderer.send("toggle-favorite", s),
 	moveFavorite: (id: string, delta: number) => ipcRenderer.send("move-favorite", id, delta),
+	reorderFavorites: (ids: string[]) => ipcRenderer.send("reorder-favorites", ids),
 	stepStation: (delta: number) => ipcRenderer.send("step-station", delta),
 	setScope: (scope: string) => ipcRenderer.send("set-scope", scope),
 	toggleRecording: () => ipcRenderer.send("record-toggle"),
 	revealRecording: () => ipcRenderer.send("reveal-recording"),
+	toggleLike: () => ipcRenderer.send("like-toggle"),
+	removeLike: (id: string) => ipcRenderer.send("like-remove", id),
+	keepFallback: () => ipcRenderer.send("keep-fallback"),
+	setCompact: (on: boolean) => ipcRenderer.send("set-compact", on),
 });

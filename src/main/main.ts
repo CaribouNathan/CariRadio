@@ -1,12 +1,27 @@
 // CariRadio — processus principal Electron.
-import { app, BrowserWindow, dialog, ipcMain, Menu, type MenuItemConstructorOptions, nativeTheme, session, shell } from "electron";
+import {
+	app,
+	BrowserWindow,
+	dialog,
+	ipcMain,
+	Menu,
+	type MenuItemConstructorOptions,
+	nativeImage,
+	nativeTheme,
+	type Rectangle,
+	session,
+	shell,
+	Tray,
+} from "electron";
 import fs from "node:fs";
 import path from "node:path";
-import { countries, frenchRegions, queryStations, reportClick, type Scope, stationById, type StationQuery } from "./catalog.js";
-import { MetadataPoller } from "./radio.js";
+import { alternatives, countries, frenchRegions, queryStations, reportClick, type Scope, stationById, type StationQuery } from "./catalog.js";
+import { MetadataPoller, type Track } from "./radio.js";
 import { Recording } from "./recorder.js";
 import { startControlServer, type Command } from "./server.js";
 import { brief, CHOCO, CONTROL_PORT, isStation, NATIVE, type Station } from "./station.js";
+import { HistoryStore, LikesStore, songKey } from "./store.js";
+import { probeStream, type StreamInfo } from "./streaminfo.js";
 
 nativeTheme.themeSource = "system";
 
@@ -48,6 +63,7 @@ type RendererCommand =
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
 let win: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let quitting = false;
 let rendererReady = false;
 let pendingAutoplay = process.argv.includes("--autoplay");
@@ -60,7 +76,15 @@ interface Config {
 	scope: Scope;
 	/** dossier des enregistrements ("" = ~/Music/CariRadio) */
 	recordDir: string;
+	compact: boolean;
+	/** mode compact : fenêtre toujours au premier plan */
+	onTop: boolean;
+	/** taille de la fenêtre normale (restaurée en sortant du mode compact) */
+	bounds: Rectangle | null;
+	/** icône dans la barre des menus */
+	tray: boolean;
 }
+const DEFAULTS: Config = { volume: 70, station: CHOCO, favorites: [CHOCO], scope: "FR", recordDir: "", compact: false, onTop: true, bounds: null, tray: true };
 const configPath = () => path.join(app.getPath("userData"), "config.json");
 function loadConfig(): Config {
 	let c: Partial<Config> & Record<string, unknown> = {};
@@ -71,13 +95,17 @@ function loadConfig(): Config {
 	}
 	// les stations natives sont toujours relues depuis le code (URL / API à jour)
 	const fresh = (s: Station) => NATIVE.find((n) => n.id === s.id) ?? s;
-	const favorites = Array.isArray(c.favorites) ? c.favorites.filter(isStation).map(fresh) : [CHOCO];
+	const b = c.bounds as Rectangle | null | undefined;
 	return {
 		volume: Number.isFinite(c.volume) ? Number(c.volume) : 70,
 		station: isStation(c.station) ? fresh(c.station) : CHOCO,
-		favorites,
+		favorites: Array.isArray(c.favorites) ? c.favorites.filter(isStation).map(fresh) : [CHOCO],
 		scope: c.scope === "ALL" ? "ALL" : "FR",
 		recordDir: typeof c.recordDir === "string" ? c.recordDir : "",
+		compact: c.compact === true,
+		onTop: c.onTop !== false,
+		bounds: b && [b.x, b.y, b.width, b.height].every(Number.isFinite) ? b : null,
+		tray: c.tray !== false,
 	};
 }
 let saveTimer: NodeJS.Timeout | null = null;
@@ -93,13 +121,124 @@ function saveConfig(): void {
 	}, 800);
 }
 
-let cfg: Config = { volume: 70, station: CHOCO, favorites: [CHOCO], scope: "FR", recordDir: "" };
-const audio: { status: AudioStatus; error: string } = { status: "idle", error: "" };
+let cfg: Config = { ...DEFAULTS };
+const audio: {
+	status: AudioStatus;
+	error: string;
+	/** coupures depuis le chargement du flux (attentes / erreurs après le début de la lecture) */
+	dropouts: number;
+	/** secondes d'audio en avance dans le tampon */
+	buffer: number;
+	hls: { bitrate: number; codec: string } | null;
+} = { status: "idle", error: "", dropouts: 0, buffer: 0, hls: null };
 
-const poller = new MetadataPoller(() => {
-	recording?.noteSong(poller.current);
+let history: HistoryStore;
+let likes: LikesStore;
+
+// ---------- source de secours ----------
+// Si le flux ne répond plus (3 échecs d'affilée), on essaie les autres fiches Radio Browser de la même radio.
+const fb: {
+	stationId: string;
+	alts: Station[] | null;
+	tried: Set<string>;
+	active: Station | null;
+	searching: boolean;
+	message: string;
+} = { stationId: "", alts: null, tried: new Set(), active: null, searching: false, message: "" };
+
+function resetFallback(): void {
+	Object.assign(fb, { stationId: "", alts: null, tried: new Set<string>(), active: null, searching: false, message: "" });
+}
+
+/** Station réellement lue : la station choisie, ou sa source de secours (même identité, autre flux). */
+function eff(): Station {
+	const a = fb.active;
+	return a ? { ...cfg.station, stream: a.stream, hls: a.hls, codec: a.codec || cfg.station.codec, bitrate: a.bitrate || cfg.station.bitrate } : cfg.station;
+}
+
+async function tryFallback(): Promise<void> {
+	const st = cfg.station;
+	fb.searching = true;
+	fb.message = "";
 	pushState();
+	try {
+		if (fb.stationId !== st.id || !fb.alts) {
+			fb.stationId = st.id;
+			fb.tried = new Set([st.stream]);
+			fb.alts = await alternatives(st);
+		}
+		if (cfg.station.id !== st.id) return; // l'utilisateur a changé de station entre-temps
+		const next = fb.alts.find((a) => !fb.tried.has(a.stream));
+		if (!next) {
+			fb.message = fb.alts.length ? "Aucune autre source de cette radio ne répond" : "Aucune autre source connue pour cette radio";
+			return;
+		}
+		fb.tried.add(next.stream);
+		fb.active = next;
+		log("[source] bascule :", st.name, "→", next.stream);
+		poller.setStation(eff());
+		quality.info = null;
+		toRenderer({ type: "load", stream: next.stream, hls: next.hls, play: true });
+	} catch (e) {
+		fb.message = "Recherche d'une autre source impossible";
+		log("[source]", e);
+	} finally {
+		fb.searching = false;
+		buildMenus();
+		pushState();
+	}
+}
+
+/** Adopte définitivement la source de secours pour cette station (et son favori). */
+function keepFallback(): void {
+	if (!fb.active) return;
+	const kept = eff();
+	cfg.station = kept;
+	cfg.favorites = cfg.favorites.map((f) => (f.id === kept.id ? kept : f));
+	fb.active = null;
+	fb.tried = new Set([kept.stream]);
+	saveConfig();
+	buildMenus();
+	pushState();
+}
+
+// ---------- qualité du flux ----------
+const quality: { info: StreamInfo | null; probing: boolean; stream: string } = { info: null, probing: false, stream: "" };
+async function probeQuality(): Promise<void> {
+	const st = eff();
+	if (st.hls || quality.probing || (quality.info && quality.stream === st.stream)) return;
+	quality.probing = true;
+	try {
+		const info = await probeStream(st.stream);
+		if (eff().stream === st.stream) {
+			quality.info = info;
+			quality.stream = st.stream;
+		}
+	} catch (e) {
+		log("[qualité]", st.stream, e);
+	} finally {
+		quality.probing = false;
+		pushState();
+	}
+}
+
+// ---------- métadonnées + historique persistant ----------
+const poller = new MetadataPoller(() => {
+	const cur = poller.current;
+	recording?.noteSong(cur);
+	if (cur) likes?.enrich(cur);
+	history?.merge(cfg.station.id, cur ? [cur, ...poller.history] : poller.history);
+	pushState();
+	updateTray();
 });
+
+/** Historique affiché : ce qu'on a gardé pour cette station, sans le morceau en cours. */
+function stationHistory(): Track[] {
+	const cur = poller.current;
+	return history
+		.get(cfg.station.id)
+		.filter((t) => !(cur && songKey(t) === songKey(cur) && Math.abs((t.startedAt || 0) - (cur.startedAt || 0)) < 180_000));
+}
 
 // ---------- enregistrement ----------
 const recordDir = () => cfg.recordDir || path.join(app.getPath("music"), "CariRadio");
@@ -110,7 +249,7 @@ let recordError = "";
 
 function startRecording(): void {
 	if (recording) return;
-	const st = cfg.station;
+	const st = eff();
 	if (st.hls) {
 		recordError = "Enregistrement impossible : cette station diffuse en HLS";
 		pushState();
@@ -128,6 +267,7 @@ function startRecording(): void {
 	});
 	buildMenus();
 	pushState();
+	updateTray();
 }
 
 async function stopRecording(): Promise<void> {
@@ -142,6 +282,7 @@ async function stopRecording(): Promise<void> {
 	if (rec.error) log("[rec]", rec.error);
 	buildMenus();
 	pushState();
+	updateTray();
 }
 
 function revealRecordings(): void {
@@ -160,13 +301,32 @@ async function chooseRecordDir(): Promise<void> {
 
 const toggleRecording = () => (recording ? void stopRecording() : startRecording());
 
+// ---------- morceaux aimés ----------
+function toggleLike(): void {
+	const cur = poller.current;
+	if (!cur?.title) return;
+	likes.toggle(cur, { id: cfg.station.id, name: cfg.station.name });
+	buildMenus();
+	pushState();
+	updateTray();
+}
+
 const isFavorite = (id: string) => cfg.favorites.some((f) => f.id === id);
+
+const hostOf = (u: string) => {
+	try {
+		return new URL(u).hostname;
+	} catch {
+		return "";
+	}
+};
 
 function state() {
 	const st = cfg.station;
 	const cur = poller.current;
-	// morceau sans pochette : on expose le logo de la station (lu tel quel par CariCover)
-	const track = cur ? { ...cur, cover: cur.cover || st.favicon, coverIsStation: !cur.cover && !!st.favicon } : null;
+	const e = eff();
+	// morceau sans pochette : on expose le logo de la station (lu tel quel par CariMusicDeck)
+	const track = cur ? { ...cur, cover: cur.cover || st.favicon, coverIsStation: !cur.cover && !!st.favicon, liked: likes.has(cur) } : null;
 	return {
 		app: "CariRadio",
 		version: app.getVersion(),
@@ -176,10 +336,10 @@ function state() {
 			subtitle: st.subtitle,
 			site: st.homepage,
 			favicon: st.favicon,
-			codec: st.codec,
-			bitrate: st.bitrate,
-			stream: st.stream,
-			hls: st.hls,
+			codec: e.codec,
+			bitrate: e.bitrate,
+			stream: e.stream,
+			hls: e.hls,
 			native: !!st.radioking,
 			favorite: isFavorite(st.id),
 		},
@@ -193,14 +353,31 @@ function state() {
 		track,
 		/** image à afficher : pochette du morceau, sinon logo de la station */
 		artwork: cur?.cover || st.favicon,
-		history: poller.history,
+		history: stationHistory(),
+		likes: likes.list(),
 		recording: {
-			available: !st.hls,
+			available: !e.hls,
 			...(recording ? recording.info() : { active: false, startedAt: 0, bytes: 0, file: "", error: "" }),
 			error: recording?.info().error || recordError,
 			dir: recordDir(),
 			last: lastRecording,
 		},
+		quality: {
+			info: quality.info && quality.stream === e.stream ? quality.info : null,
+			probing: quality.probing,
+			dropouts: audio.dropouts,
+			buffer: audio.buffer,
+			hls: e.hls ? audio.hls : null,
+		},
+		source: {
+			fallback: !!fb.active,
+			fallbackName: fb.active?.name ?? "",
+			host: hostOf(e.stream),
+			searching: fb.searching,
+			message: fb.message,
+		},
+		compact: cfg.compact,
+		onTop: cfg.onTop,
 		serverTime: Date.now(),
 	};
 }
@@ -221,15 +398,21 @@ function toRenderer(c: RendererCommand): void {
 
 // ---------- stations ----------
 function selectStation(st: Station, play = true): void {
-	const changed = st.id !== cfg.station.id || st.stream !== cfg.station.stream;
+	const changed = st.id !== cfg.station.id || st.stream !== cfg.station.stream || !!fb.active;
 	if (changed && recording) void stopRecording(); // un fichier = une station
+	if (changed) resetFallback();
 	cfg.station = st;
 	// un favori garde la version la plus récente de sa fiche
 	cfg.favorites = cfg.favorites.map((f) => (f.id === st.id ? st : f));
 	saveConfig();
-	if (changed) poller.setStation(st);
+	if (changed) {
+		poller.setStation(st);
+		audio.dropouts = 0;
+		audio.hls = null;
+	}
 	buildMenus();
 	pushState();
+	updateTray();
 	if (play) reportClick(st.id);
 	toRenderer({ type: "load", stream: st.stream, hls: st.hls, play: play || audio.status === "playing" || audio.status === "loading" });
 }
@@ -241,7 +424,7 @@ async function selectStationById(id: string): Promise<void> {
 		const st = await stationById(id);
 		if (st) selectStation(st);
 	} catch (e) {
-		console.error("[CariRadio] station introuvable :", id, e);
+		log("[station] introuvable :", id, e);
 	}
 }
 
@@ -260,19 +443,23 @@ function toggleFavorite(st: Station): void {
 	pushState();
 }
 
-function moveFavorite(id: string, delta: number): void {
-	const i = cfg.favorites.findIndex((f) => f.id === id);
-	const j = i + delta;
-	if (i < 0 || j < 0 || j >= cfg.favorites.length) return;
-	const list = [...cfg.favorites];
-	[list[i], list[j]] = [list[j], list[i]];
+function setFavorites(list: Station[]): void {
 	cfg.favorites = list;
 	saveConfig();
 	buildMenus();
 	pushState();
 }
 
-// ---------- commandes (menus, API locale) ----------
+function moveFavorite(id: string, delta: number): void {
+	const i = cfg.favorites.findIndex((f) => f.id === id);
+	const j = i + delta;
+	if (i < 0 || j < 0 || j >= cfg.favorites.length) return;
+	const list = [...cfg.favorites];
+	[list[i], list[j]] = [list[j], list[i]];
+	setFavorites(list);
+}
+
+// ---------- commandes (menus, barre des menus, API locale) ----------
 function command(c: Command): void {
 	switch (c.type) {
 		case "show":
@@ -285,6 +472,10 @@ function command(c: Command): void {
 			if (c.action === "start") return startRecording();
 			if (c.action === "stop") return void stopRecording();
 			return toggleRecording();
+		case "like":
+			return toggleLike();
+		case "compact":
+			return setCompact(!cfg.compact);
 		case "play":
 		case "toggle":
 			poller.refresh();
@@ -294,18 +485,62 @@ function command(c: Command): void {
 	}
 }
 
+// ---------- fenêtre + mode compact ----------
+const NORMAL = { width: 380, height: 760, minWidth: 340, minHeight: 600 };
+const COMPACT = { width: 380, height: 136, minWidth: 320 };
+
 function showWindow(): void {
 	if (!win) createWindow();
 	win!.show();
 	win!.focus();
 }
 
+function applyWindowMode(animate: boolean): void {
+	if (!win) return;
+	if (cfg.compact) {
+		win.setMinimumSize(COMPACT.minWidth, COMPACT.height);
+		win.setMaximumSize(1200, COMPACT.height);
+		const b = win.getBounds();
+		win.setBounds({ x: b.x, y: b.y, width: Math.min(b.width, 520), height: COMPACT.height }, animate);
+		win.setAlwaysOnTop(cfg.onTop, "floating");
+		win.setVisibleOnAllWorkspaces(cfg.onTop, { visibleOnFullScreen: true });
+	} else {
+		win.setMaximumSize(0, 0); // 0 = sans limite
+		win.setMinimumSize(NORMAL.minWidth, NORMAL.minHeight);
+		const b = cfg.bounds;
+		const cur = win.getBounds();
+		win.setBounds(b ? { ...b, x: cur.x, y: cur.y } : { x: cur.x, y: cur.y, width: NORMAL.width, height: NORMAL.height }, animate);
+		win.setAlwaysOnTop(false);
+		win.setVisibleOnAllWorkspaces(false);
+	}
+}
+
+function setCompact(on: boolean): void {
+	if (on === cfg.compact) return;
+	if (on && win) cfg.bounds = win.getBounds(); // taille normale à restaurer
+	cfg.compact = on;
+	saveConfig();
+	applyWindowMode(true);
+	buildMenus();
+	pushState();
+	showWindow();
+}
+
+function setOnTop(on: boolean): void {
+	cfg.onTop = on;
+	saveConfig();
+	applyWindowMode(false);
+	buildMenus();
+	pushState();
+}
+
 function createWindow(): void {
+	const b = cfg.bounds;
 	win = new BrowserWindow({
-		width: 380,
-		height: 760,
-		minWidth: 340,
-		minHeight: 600,
+		width: cfg.compact ? COMPACT.width : (b?.width ?? NORMAL.width),
+		height: cfg.compact ? COMPACT.height : (b?.height ?? NORMAL.height),
+		minWidth: cfg.compact ? COMPACT.minWidth : NORMAL.minWidth,
+		minHeight: cfg.compact ? COMPACT.height : NORMAL.minHeight,
 		title: "CariRadio",
 		titleBarStyle: "hiddenInset",
 		vibrancy: "under-window",
@@ -322,6 +557,14 @@ function createWindow(): void {
 	});
 	win.loadFile(path.join(__dirname, "renderer", "index.html"));
 	win.once("ready-to-show", () => win?.show());
+	applyWindowMode(false);
+	// mémorise la taille de la fenêtre normale
+	win.on("resized", () => {
+		if (win && !cfg.compact) {
+			cfg.bounds = win.getBounds();
+			saveConfig();
+		}
+	});
 	// erreurs du renderer (dont celles attrapées par le filet d'affichage) → journal
 	win.webContents.on("console-message", (...args: unknown[]) => {
 		const ev = args[0] as { level?: string | number; message?: string };
@@ -347,6 +590,66 @@ function createWindow(): void {
 	});
 }
 
+// ---------- barre des menus ----------
+function trayMenu(): Menu {
+	const cur = poller.current;
+	const playing = audio.status === "playing" || audio.status === "loading";
+	const st = cfg.station;
+	const items: MenuItemConstructorOptions[] = [
+		{ label: `${playing ? "▶︎" : "❚❚"}  ${st.name}${st.subtitle ? ` · ${st.subtitle}` : ""}`, enabled: false },
+		...(cur?.title ? [{ label: `${cur.artist ? `${cur.artist} — ` : ""}${cur.title}`.slice(0, 70), enabled: false } as MenuItemConstructorOptions] : []),
+		{ type: "separator" },
+		{ label: playing ? "Pause" : "Lecture", click: () => command({ type: "toggle" }) },
+		{ label: cur && likes.has(cur) ? "♥︎ Retirer des morceaux aimés" : "♡ J'aime ce morceau", enabled: !!cur?.title, click: toggleLike },
+		{ label: recording ? "■ Arrêter l'enregistrement" : "● Enregistrer le flux", enabled: !!recording || !eff().hls, click: toggleRecording },
+		{ type: "separator" },
+		...cfg.favorites.slice(0, 15).map((f) => ({ label: f.name, type: "radio" as const, checked: f.id === st.id, click: () => selectStation(f) })),
+		...(cfg.favorites.length ? [{ type: "separator" } as MenuItemConstructorOptions] : []),
+		{ label: "Volume +", click: () => command({ type: "volumeStep", delta: 10 }) },
+		{ label: "Volume −", click: () => command({ type: "volumeStep", delta: -10 }) },
+		{ type: "separator" },
+		{ label: "Mode compact", type: "checkbox", checked: cfg.compact, click: () => setCompact(!cfg.compact) },
+		{ label: "Afficher CariRadio", click: showWindow },
+		{ type: "separator" },
+		{ label: "Quitter CariRadio", click: () => app.quit() },
+	];
+	return Menu.buildFromTemplate(items);
+}
+
+function setupTray(): void {
+	if (!cfg.tray) {
+		tray?.destroy();
+		tray = null;
+		return;
+	}
+	if (tray) return;
+	const img = nativeImage.createFromPath(path.join(__dirname, "trayTemplate.png"));
+	img.setTemplateImage(true);
+	tray = new Tray(img);
+	tray.setIgnoreDoubleClickEvents(true);
+	// menu reconstruit à chaque ouverture : toujours à jour sans le régénérer à chaque changement d'état
+	const open = () => tray?.popUpContextMenu(trayMenu());
+	tray.on("click", open);
+	tray.on("right-click", open);
+	updateTray();
+}
+
+function updateTray(): void {
+	if (!tray) return;
+	const cur = poller.current;
+	const song = cur?.title ? `${cur.artist ? `${cur.artist} — ` : ""}${cur.title}` : "";
+	tray.setToolTip([`CariRadio — ${cfg.station.name}`, song].filter(Boolean).join("\n"));
+	tray.setTitle(recording ? " REC" : ""); // rappel discret à côté de l'icône pendant un enregistrement
+}
+
+function setTrayEnabled(on: boolean): void {
+	cfg.tray = on;
+	saveConfig();
+	setupTray();
+	buildMenus();
+}
+
+// ---------- menus de l'application ----------
 function buildMenus(): void {
 	const favItems: MenuItemConstructorOptions[] = cfg.favorites.map((f, i) => ({
 		label: f.subtitle ? `${f.name} — ${f.subtitle}` : f.name,
@@ -356,9 +659,23 @@ function buildMenus(): void {
 		click: () => selectStation(f),
 	}));
 	const fav = isFavorite(cfg.station.id);
+	const cur = poller.current;
 	Menu.setApplicationMenu(
 		Menu.buildFromTemplate([
-			{ role: "appMenu" },
+			{
+				role: "appMenu",
+				submenu: [
+					{ role: "about" },
+					{ type: "separator" },
+					{ label: "Icône dans la barre des menus", type: "checkbox", checked: cfg.tray, click: () => setTrayEnabled(!cfg.tray) },
+					{ type: "separator" },
+					{ role: "hide" },
+					{ role: "hideOthers" },
+					{ role: "unhide" },
+					{ type: "separator" },
+					{ role: "quit" },
+				],
+			},
 			{ role: "editMenu" },
 			{
 				label: "Commandes",
@@ -370,10 +687,12 @@ function buildMenus(): void {
 					{ label: "Monter le volume", accelerator: "CmdOrCtrl+Up", click: () => command({ type: "volumeStep", delta: 5 }) },
 					{ label: "Baisser le volume", accelerator: "CmdOrCtrl+Down", click: () => command({ type: "volumeStep", delta: -5 }) },
 					{ type: "separator" },
+					{ label: cur && likes.has(cur) ? "Retirer des morceaux aimés" : "J'aime ce morceau", accelerator: "CmdOrCtrl+L", enabled: !!cur?.title, click: toggleLike },
+					{ type: "separator" },
 					{
 						label: recording ? "Arrêter l'enregistrement" : "Enregistrer le flux",
 						accelerator: "CmdOrCtrl+R",
-						enabled: !!recording || !cfg.station.hls,
+						enabled: !!recording || !eff().hls,
 						click: toggleRecording,
 					},
 					{ label: "Afficher les enregistrements", click: () => revealRecordings() },
@@ -387,6 +706,7 @@ function buildMenus(): void {
 						label: "Choisir une station…",
 						accelerator: "CmdOrCtrl+K",
 						click: () => {
+							if (cfg.compact) setCompact(false);
 							showWindow();
 							toRenderer({ type: "openStations" });
 						},
@@ -398,7 +718,15 @@ function buildMenus(): void {
 					{ label: "Favori précédent", accelerator: "CmdOrCtrl+[", enabled: cfg.favorites.length > 0, click: () => stepStation(-1) },
 					{ type: "separator" },
 					{ label: fav ? "Retirer des favoris" : "Ajouter aux favoris", accelerator: "CmdOrCtrl+D", click: () => toggleFavorite(cfg.station) },
+					{ label: "Garder la source de secours", enabled: !!fb.active, click: keepFallback },
 					{ label: "Site de la station", enabled: !!cfg.station.homepage, click: () => void shell.openExternal(cfg.station.homepage) },
+				],
+			},
+			{
+				label: "Présentation",
+				submenu: [
+					{ label: "Mode compact", type: "checkbox", checked: cfg.compact, accelerator: "CmdOrCtrl+Shift+M", click: () => setCompact(!cfg.compact) },
+					{ label: "Mode compact au premier plan", type: "checkbox", checked: cfg.onTop, click: () => setOnTop(!cfg.onTop) },
 				],
 			},
 			{ role: "windowMenu" },
@@ -429,22 +757,47 @@ ipcMain.handle("renderer-ready", () => {
 	}
 	return s;
 });
-ipcMain.on("audio-state", (_e, a: { status: AudioStatus; volume: number; error?: string }) => {
-	const vol = Math.round(a.volume);
-	if (vol !== cfg.volume) {
-		cfg.volume = vol;
-		saveConfig();
-	}
-	audio.status = a.status;
-	audio.error = a.error ?? "";
-	poller.setActive(a.status === "playing" || a.status === "loading");
-	pushState();
-});
+ipcMain.on(
+	"audio-state",
+	(
+		_e,
+		a: { status: AudioStatus; volume: number; error?: string; retries?: number; dropouts?: number; buffer?: number; hls?: { bitrate: number; codec: string } | null },
+	) => {
+		const vol = Math.round(a.volume);
+		if (vol !== cfg.volume) {
+			cfg.volume = vol;
+			saveConfig();
+		}
+		const was = audio.status;
+		audio.status = a.status;
+		audio.error = a.error ?? "";
+		audio.dropouts = Number(a.dropouts) || 0;
+		audio.buffer = Number(a.buffer) || 0;
+		audio.hls = a.hls ?? null;
+		poller.setActive(a.status === "playing" || a.status === "loading");
+		if (a.status === "playing") {
+			fb.message = "";
+			void probeQuality();
+		}
+		// 3e échec d'affilée : on cherche une autre source de la même radio
+		if (a.status === "error" && (a.retries ?? 0) >= 2 && !fb.searching) void tryFallback();
+		if (was !== a.status) updateTray();
+		pushState();
+	},
+);
 ipcMain.on("open-external", (_e, url: string) => {
 	if (typeof url === "string" && /^https:\/\//.test(url)) void shell.openExternal(url);
 });
 ipcMain.on("record-toggle", () => toggleRecording());
 ipcMain.on("reveal-recording", () => revealRecordings());
+ipcMain.on("like-toggle", () => toggleLike());
+ipcMain.on("like-remove", (_e, id: string) => {
+	likes.remove(String(id));
+	buildMenus();
+	pushState();
+});
+ipcMain.on("keep-fallback", () => keepFallback());
+ipcMain.on("set-compact", (_e, on: boolean) => setCompact(!!on));
 ipcMain.handle("catalog-query", (_e, q: StationQuery) => queryStations(q));
 ipcMain.handle("catalog-areas", (_e, scope: Scope) => (scope === "ALL" ? countries() : frenchRegions()));
 ipcMain.on("select-station", (_e, st: unknown) => {
@@ -452,6 +805,14 @@ ipcMain.on("select-station", (_e, st: unknown) => {
 });
 ipcMain.on("toggle-favorite", (_e, st: unknown) => {
 	if (isStation(st)) toggleFavorite(st);
+});
+ipcMain.on("reorder-favorites", (_e, ids: unknown) => {
+	if (!Array.isArray(ids)) return;
+	const byId = new Map(cfg.favorites.map((f) => [f.id, f]));
+	const next = ids.map((id) => byId.get(String(id))).filter((f): f is Station => !!f);
+	// sécurité : un favori absent de la liste reçue n'est jamais perdu
+	for (const f of cfg.favorites) if (!next.includes(f)) next.push(f);
+	setFavorites(next);
 });
 ipcMain.on("move-favorite", (_e, id: string, delta: number) => moveFavorite(String(id), Math.sign(Number(delta))));
 ipcMain.on("step-station", (_e, delta: number) => stepStation(Math.sign(Number(delta)) || 1));
@@ -469,6 +830,8 @@ app.on("second-instance", (_e, argv) => {
 app.on("activate", () => showWindow());
 app.on("before-quit", (e) => {
 	quitting = true;
+	history?.flush();
+	likes?.flush();
 	// on termine proprement l'enregistrement (fermeture + renommage du fichier) avant de quitter
 	if (recording) {
 		e.preventDefault();
@@ -481,8 +844,11 @@ app.whenReady().then(() => {
 	session.defaultSession.setPermissionCheckHandler((_wc, permission) => !CAPTURE_PERMISSIONS.has(permission));
 	session.defaultSession.setDevicePermissionHandler(() => false);
 	cfg = loadConfig();
+	history = new HistoryStore(app.getPath("userData"));
+	likes = new LikesStore(app.getPath("userData"));
 	buildMenus();
 	createWindow();
+	setupTray();
 	poller.setStation(cfg.station);
 	startControlServer(CONTROL_PORT, state, stationsPayload, command);
 });

@@ -49,7 +49,7 @@ export function isStation(x: unknown): x is Station {
 	return !!s && typeof s.id === "string" && typeof s.name === "string" && typeof s.stream === "string" && /^https?:\/\//.test(s.stream);
 }
 
-/** Port de l'API de contrôle locale (lue par le plugin Stream Deck CariCover). */
+/** Port de l'API de contrôle locale (lue par le plugin Stream Deck CariMusicDeck). */
 export const CONTROL_PORT = Number(process.env.CARIRADIO_PORT) || 32700;
 
 export const USER_AGENT = "CariRadio/1.1 (Caribou Labs; macOS)";

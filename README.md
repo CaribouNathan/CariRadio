@@ -13,7 +13,12 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
 - **Enregistrement** (⌘R) : copie brute du flux (sans réencodage) dans `~/Music/CariRadio`, fichier nommé
   « Artiste - Titre (Station, date heure) ». Indisponible pour les flux HLS.
 - **Apple Music** : un clic sur le morceau en cours ou sur un titre de l'historique ouvre sa fiche.
-- **Stream Deck** : API locale sur `127.0.0.1:32700`, utilisée par le plugin CariCover.
+- **Barre des menus** : icône avec station, morceau, lecture/pause, J'aime, enregistrement et favoris.
+- **Morceaux aimés** (♥, ⌘L) et **historique par station** conservés entre les lancements.
+- **Mode compact** (⇧⌘M) : petite fenêtre au premier plan.
+- **Qualité du flux** mesurée (format, débit réel, tampon, coupures) et **source de secours** automatique quand un
+  flux ne répond plus (autres fiches de la même radio).
+- **Stream Deck** : API locale sur `127.0.0.1:32700`, utilisée par le plugin CariMusicDeck.
 - Centre de contrôle macOS et touches média (⏮ ⏭ = favori précédent / suivant). Clair/sombre automatique.
 - **Aucun accès au micro** : signée avec le runtime renforcé sans droit d'entrée audio, l'app ne peut pas y accéder
   et macOS ne pose pas la question.
@@ -37,6 +42,8 @@ Mini lecteur de radios pour macOS, pilotable depuis le Stream Deck. Un outil [Ca
 | ⌘] / ⌘[ | Favori suivant / précédent |
 | ⌘D | Ajouter / retirer la station des favoris |
 | ⌘R | Enregistrer le flux / arrêter |
+| ⌘L | J'aime ce morceau |
+| ⇧⌘M | Mode compact |
 | ⌘↑ / ⌘↓ | Volume |
 
 Fermer la fenêtre ne coupe pas la radio (⌘Q pour quitter).
@@ -46,13 +53,14 @@ Fermer la fenêtre ne coupe pas la radio (⌘Q pour quitter).
 `POST /play` `/pause` `/toggle` `/stop` `/show`
 `POST /volume?value=0-100` `/volume/up?step=5` `/volume/down?step=5`
 `POST /station?id=<id>` (favori ou identifiant Radio Browser) · `POST /station/next` · `POST /station/prev`
-`POST /record/toggle` `/record/start` `/record/stop`
+`POST /record/toggle` `/record/start` `/record/stop` · `POST /like/toggle` · `POST /compact`
 
 `/state` renvoie la station (`station.name`, `station.subtitle`, `station.favicon`, `station.codec`,
 `station.bitrate`, `station.favorite`…), le morceau (`track`), l'historique (`history`), les favoris, et `artwork`
 (pochette, ou logo de la station). Quand le morceau n'a pas de pochette, `track.cover` contient le logo et
 `track.coverIsStation` vaut `true`. `recording` donne l'état de l'enregistrement (`active`, `startedAt`, `bytes`,
-`file`, `last`).
+`file`, `last`). Aussi : `track.liked`, `likes`, `quality` (format mesuré, tampon, coupures), `source`
+(source de secours), `compact`.
 
 Écoute locale uniquement : l'API n'est pas joignable depuis le réseau.
 

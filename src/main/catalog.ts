@@ -251,3 +251,27 @@ export function reportClick(id: string): void {
 	if (!/^[0-9a-f-]{36}$/i.test(id)) return;
 	void rb(`/json/url/${id}`).catch(() => undefined);
 }
+
+const streamKey = (u: string) =>
+	u
+		.toLowerCase()
+		.replace(/^https?:\/\//, "")
+		.replace(/[?#].*$/, "")
+		.replace(/\/+$/, "");
+
+/**
+ * Autres fiches de la même radio dans l'annuaire (même nom normalisé, autre flux) — pour le basculement
+ * automatique quand le flux habituel ne répond plus. Triées par popularité.
+ */
+export async function alternatives(st: Pick<Station, "name" | "stream" | "countrycode">): Promise<Station[]> {
+	const raw = await rb<Raw[]>("/json/stations/search", { name: st.name, order: "clickcount", reverse: "true", hidebroken: "true", limit: 50 });
+	const key = dedupeKey(st);
+	const seen = new Set([streamKey(st.stream)]);
+	return raw.map(toStation).filter((s) => {
+		const k = streamKey(s.stream);
+		if (!s.stream || seen.has(k) || dedupeKey(s) !== key) return false;
+		if (st.countrycode && s.countrycode && s.countrycode !== st.countrycode) return false;
+		seen.add(k);
+		return true;
+	});
+}

@@ -128,3 +128,50 @@ export const RecIcon = ({ size = 20, active = false }: P & { active?: boolean })
 		{active ? <rect x="6.6" y="6.6" width="6.8" height="6.8" rx="1.4" fill="currentColor" /> : <circle cx="10" cy="10" r="4.6" fill="currentColor" />}
 	</svg>
 );
+
+/** Poignée de glisser-déposer (6 points). */
+export const GripIcon = ({ size = 16 }: P) => (
+	<svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
+		{[4, 8, 12].map((y) => (
+			<g key={y}>
+				<circle cx="5.5" cy={y} r="1.25" fill="currentColor" />
+				<circle cx="10.5" cy={y} r="1.25" fill="currentColor" />
+			</g>
+		))}
+	</svg>
+);
+
+export const HeartIcon = ({ size = 20, filled = false }: P & { filled?: boolean }) => (
+	<svg width={size} height={size} viewBox="0 0 20 20" aria-hidden="true">
+		<path
+			d="M10 16.6s-6.4-3.9-6.4-8.6A3.6 3.6 0 0 1 10 5.7a3.6 3.6 0 0 1 6.4 2.3c0 4.7-6.4 8.6-6.4 8.6z"
+			fill={filled ? "currentColor" : "none"}
+			stroke="currentColor"
+			strokeWidth="1.5"
+			strokeLinejoin="round"
+		/>
+	</svg>
+);
+
+/** Réduire en mode compact. */
+export const CompactIcon = ({ size = 16 }: P) => (
+	<svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
+		<rect x="2" y="2.5" width="12" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+		<rect x="4.2" y="9.2" width="7.6" height="2.3" rx="0.8" fill="currentColor" />
+	</svg>
+);
+
+/** Revenir à la fenêtre complète. */
+export const ExpandIcon = ({ size = 14 }: P) => (
+	<svg width={size} height={size} viewBox="0 0 14 14" aria-hidden="true">
+		<path d="M8.5 2h3.5v3.5M12 2 8 6M5.5 12H2V8.5M2 12l4-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+	</svg>
+);
+
+export const InfoIcon = ({ size = 13 }: P) => (
+	<svg width={size} height={size} viewBox="0 0 14 14" aria-hidden="true">
+		<circle cx="7" cy="7" r="5.8" fill="none" stroke="currentColor" strokeWidth="1.3" />
+		<path d="M7 6.3v3.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+		<circle cx="7" cy="4.3" r="0.85" fill="currentColor" />
+	</svg>
+);

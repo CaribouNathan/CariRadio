@@ -13,6 +13,51 @@ export interface Track {
 	buyLink: string;
 	/** true : `cover` est le logo de la station (le morceau n'a pas de pochette) */
 	coverIsStation?: boolean;
+	/** morceau dans les « J'aime » */
+	liked?: boolean;
+}
+
+export interface Like {
+	id: string;
+	title: string;
+	artist: string;
+	album: string;
+	cover: string;
+	buyLink: string;
+	station: string;
+	stationId: string;
+	at: number;
+}
+
+export interface StreamInfo {
+	format: string;
+	detail: string;
+	bitrate: number;
+	vbr: boolean;
+	declaredBitrate: number;
+	sampleRate: number;
+	channels: string;
+	contentType: string;
+	server: string;
+	host: string;
+	secure: boolean;
+	probedAt: number;
+}
+
+export interface QualityState {
+	info: StreamInfo | null;
+	probing: boolean;
+	dropouts: number;
+	buffer: number;
+	hls: { bitrate: number; codec: string } | null;
+}
+
+export interface SourceState {
+	fallback: boolean;
+	fallbackName: string;
+	host: string;
+	searching: boolean;
+	message: string;
 }
 
 export interface Station {
@@ -43,6 +88,11 @@ export interface AppState {
 	track: Track | null;
 	history: Track[];
 	recording: RecordingState;
+	likes: Like[];
+	quality: QualityState;
+	source: SourceState;
+	compact: boolean;
+	onTop: boolean;
 }
 
 export interface RecordingState {
@@ -84,17 +134,22 @@ export interface CariBridge {
 	ready(): Promise<AppState>;
 	onState(cb: (s: AppState) => void): void;
 	onCommand(cb: (c: Command) => void): void;
-	reportAudio(a: { status: AudioStatus; volume: number; error?: string }): void;
+	reportAudio(a: { status: AudioStatus; volume: number; error?: string; retries?: number; dropouts?: number; buffer?: number; hls?: { bitrate: number; codec: string } | null }): void;
 	openExternal(url: string): void;
 	query(q: StationQuery): Promise<{ stations: Station[]; hasMore: boolean }>;
 	areas(scope: Scope): Promise<Area[]>;
 	selectStation(s: Station): void;
 	toggleFavorite(s: Station): void;
 	moveFavorite(id: string, delta: number): void;
+	reorderFavorites(ids: string[]): void;
 	stepStation(delta: number): void;
 	setScope(scope: Scope): void;
 	toggleRecording(): void;
 	revealRecording(): void;
+	toggleLike(): void;
+	removeLike(id: string): void;
+	keepFallback(): void;
+	setCompact(on: boolean): void;
 }
 
 declare global {
